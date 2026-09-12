@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Chip Room</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=Manrope:wght@400;600;700;800&display=swap');
+
+  :root{
+    --felt-dark:#04241a;
+    --felt:#0b3d2e;
+    --felt-light:#12523e;
+    --gold:#d9b45a;
+    --gold-bright:#f0d68a;
+    --red:#8a2332;
+    --red-bright:#b83247;
+    --cream:#f3e9d2;
+    --cream-dim:#c9bfa4;
+    --shadow:rgba(0,0,0,0.45);
+  }
+
+  *{box-sizing:border-box; -webkit-tap-highlight-color: transparent;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:
+      radial-gradient(ellipse at top, rgba(255,255,255,0.05), transparent 60%),
+      repeating-linear-gradient(135deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 2px, transparent 2px, transparent 6px),
+      linear-gradient(160deg, var(--felt-dark), var(--felt) 55%, var(--felt-light));
+    min-height:100vh;
+    font-family:'Manrope', sans-serif;
+    color:var(--cream);
+    padding-bottom:84px;
+  }
+
+  h1,h2,h3,.display{font-family:'Cinzel', serif; letter-spacing:0.03em;}
+
+  .app{max-width:520px; margin:0 auto; padding:22px 16px 10px;}
+
+  .brand{
+    display:flex; align-items:center; justify-content:center; gap:10px;
+    margin-bottom:22px;
+  }
+  .brand .chip-icon{
+    width:34px; height:34px; border-radius:50%;
+    background: radial-gradient(circle at 35% 30%, var(--gold-bright), var(--gold) 55%, #a3822f 100%);
+    border:3px dashed var(--felt-dark);
+    box-shadow:0 3px 0 rgba(0,0,0,0.35);
+  }
+  .brand h1{
+    font-size:1.6rem; margin:0; color:var(--gold-bright);
+    text-shadow:0 2px 6px rgba(0,0,0,0.5);
+  }
+
+  .card{
+    background:linear-gradient(160deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+    border:1px solid rgba(217,180,90,0.25);
+    border-radius:18px;
+    padding:20px;
+    margin-bottom:16px;
+    box-shadow:0 10px 30px var(--shadow);
+    backdrop-filter: blur(2px);
+  }
+
+  label{
+    display:block; font-size:0.75rem; text-transform:uppercase; letter-spacing:0.08em;
+    color:var(--cream-dim); margin:14px 0 6px;
+  }
+  label:first-child{margin-top:0;}
+
+  input[type=text], input[type=number]{
+    width:100%; padding:13px 14px; font-size:1rem; font-family:'Manrope',sans-serif;
+    border-radius:12px; border:1px solid rgba(217,180,90,0.35);
+    background:rgba(0,0,0,0.25); color:var(--cream); outline:none;
+  }
+  input:focus{border-color:var(--gold);}
+  input::placeholder{color:rgba(243,233,210,0.35);}
+
+  .row{display:flex; gap:10px;}
+  .row > *{flex:1;}
+
+  button{
+    font-family:'Manrope', sans-serif; font-weight:700; font-size:0.95rem;
+    border:none; border-radius:12px; padding:13px 16px; cursor:pointer;
+    transition:transform 0.08s ease, filter 0.15s ease;
+  }
+  button:active{transform:scale(0.97);}
+
+  .btn-gold{
+    background:linear-gradient(160deg, var(--gold-bright), var(--gold));
+    color:#33270a; box-shadow:0 4px 0 #8a6f28, 0 6px 14px var(--shadow);
+  }
+  .btn-red{
+    background:linear-gradient(160deg, var(--red-bright), var(--red));
+    color:var(--cream); box-shadow:0 4px 0 #5c1622, 0 6px 14px var(--shadow);
+  }
+  .btn-ghost{
+    background:rgba(255,255,255,0.06); color:var(--cream-dim);
+    border:1px solid rgba(243,233,210,0.2);
+  }
+  .btn-small{padding:8px 12px; font-size:0.8rem; border-radius:9px;}
+  .btn-full{width:100%; margin-top:14px;}
+
+  .muted{color:var(--cream-dim); font-size:0.85rem; line-height:1.5;}
+  .center{text-align:center;}
+
+  .code-display{
+    font-family:'Cinzel', serif; font-size:2rem; letter-spacing:0.25em;
+    color:var(--gold-bright); text-align:center; margin:8px 0 2px;
+  }
+
+  .seat{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding:12px 14px; border-radius:12px; margin-bottom:8px;
+    background:rgba(0,0,0,0.22); border:1px solid rgba(255,255,255,0.06);
+  }
+  .seat.empty{border-style:dashed; opacity:0.7; cursor:pointer;}
+  .seat.me{border-color:var(--gold); box-shadow:0 0 0 1px var(--gold) inset;}
+  .seat-name{font-weight:800; font-size:0.95rem;}
+  .seat-name .tag{font-size:0.65rem; color:var(--gold-bright); margin-left:6px; font-weight:700;}
+  .seat-balance{font-family:'Cinzel',serif; color:var(--gold-bright); font-size:1.05rem;}
+  .seat-bet{font-size:0.75rem; color:var(--cream-dim); margin-top:2px;}
+
+  .tabbar{
+    position:fixed; bottom:0; left:0; right:0;
+    background:linear-gradient(0deg, var(--felt-dark), rgba(4,36,26,0.95));
+    border-top:1px solid rgba(217,180,90,0.3);
+    display:flex; justify-content:center; padding:8px 12px calc(8px + env(safe-area-inset-bottom));
+    z-index:10;
+  }
+  .tabbar-inner{display:flex; gap:6px; max-width:520px; width:100%;}
+  .tab-btn{
+    flex:1; background:transparent; color:var(--cream-dim); font-weight:700;
+    font-size:0.8rem; padding:10px 6px; border-radius:10px; border:1px solid transparent;
+  }
+  .tab-btn.active{
+    background:rgba(217,180,90,0.15); color:var(--gold-bright); border-color:rgba(217,180,90,0.4);
+  }
+
+  .pot-banner{
+    text-align:center; padding:14px; border-radius:14px; margin-bottom:16px;
+    background:linear-gradient(160deg, rgba(217,180,90,0.18), rgba(217,180,90,0.05));
+    border:1px solid rgba(217,180,90,0.35);
+  }
+  .pot-banner .amt{font-family:'Cinzel',serif; font-size:1.8rem; color:var(--gold-bright);}
+  .pot-banner .lbl{font-size:0.7rem; text-transform:uppercase; letter-spacing:0.1em; color:var(--cream-dim);}
+
+  .rank-item{
+    display:flex; align-items:center; gap:12px; padding:12px 4px;
+    border-bottom:1px solid rgba(255,255,255,0.07);
+  }
+  .rank-item:last-child{border-bottom:none;}
+  .rank-num{
+    font-family:'Cinzel',serif; font-weight:900; color:var(--gold);
+    width:26px; text-align:center; font-size:1rem; flex-shrink:0;
+  }
+  .rank-name{font-weight:800; font-size:0.92rem;}
+  .rank-desc{font-size:0.78rem; color:var(--cream-dim); margin-top:2px;}
+
+  .topbar{display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;}
+  .topbar .code-mini{font-family:'Cinzel',serif; color:var(--gold-bright); letter-spacing:0.15em; font-size:0.95rem;}
+
+  .hint{font-size:0.72rem; color:var(--cream-dim); text-align:center; margin-top:4px;}
+
+  .divider{height:1px; background:rgba(255,255,255,0.08); margin:16px 0;}
+
+  select{
+    width:100%; padding:13px 14px; font-size:0.95rem; border-radius:12px;
+    border:1px solid rgba(217,180,90,0.35); background:rgba(0,0,0,0.25); color:var(--cream);
+    font-family:'Manrope',sans-serif;
+  }
+
+  .err{color:var(--red-bright); font-size:0.8rem; margin-top:8px; text-align:center;}
+  .toast{
+    position:fixed; top:16px; left:50%; transform:translateX(-50%);
+    background:rgba(0,0,0,0.85); color:var(--gold-bright); padding:10px 18px;
+    border-radius:20px; font-size:0.85rem; font-weight:700; z-index:50;
+    border:1px solid rgba(217,180,90,0.4); pointer-events:none;
+    opacity:0; transition:opacity 0.25s ease;
+  }
+  .toast.show{opacity:1;}
+</style>
+</head>
+<body>
+<div class="app" id="app"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+const HAND_RANKINGS = [
+  ["Royal Flush","A, K, Q, J, 10, all the same suit."],
+  ["Straight Flush","Five cards in a row, all the same suit."],
+  ["Four of a Kind","Four cards of the same rank."],
+  ["Full House","Three of a kind plus a pair."],
+  ["Flush","Five cards of the same suit, any order."],
+  ["Straight","Five cards in a row, mixed suits."],
+  ["Three of a Kind","Three cards of the same rank."],
+  ["Two Pair","Two separate pairs."],
+  ["Pair","Two cards of the same rank."],
+  ["High Card","No combination — highest card plays."]
+];
+
+// ============================================================
+// FIREBASE SETUP — paste your own project's config here.
+// Get this from: Firebase Console > Project Settings > Your apps > (</>) web app
+// See the setup steps that came with this file.
+// ============================================================
+const firebaseConfig = {
+    apiKey: "AIzaSyCLdMLLgzV8BgdwudpjOApuquiVkNrA5a0",
+    authDomain: "chip-room-f2462.firebaseapp.com",
+    databaseURL: "https://chip-room-f2462-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "chip-room-f2462",
+    storageBucket: "chip-room-f2462.firebasestorage.app",
+    messagingSenderId: "785904312325",
+    appId: "1:785904312325:web:2088cfa0315a811699fc6c",
+    measurementId: "G-RKP9B9F6DH"
+  };
+// ============================================================
+
+let db = null;
+let firebaseReady = false;
+try {
+  if (!firebaseConfig.apiKey.includes('PASTE_YOUR')) {
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.database();
+    firebaseReady = true;
+  }
+} catch (e) {
+  console.error('Firebase init failed:', e);
+}
+
+let state = {
+  screen: 'home',      // home | join | table
+  code: null,
+  mySeat: null,         // index of seat I'm sitting in
+  myName: '',
+  table: null,          // cached table object
+  tab: 'poker',          // poker | blackjack | ranks
+  poll: null,
+  error: ''
+};
+
+function genCode(){
+  const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  let c = '';
+  for(let i=0;i<4;i++) c += letters[Math.floor(Math.random()*letters.length)];
+  return c;
+}
+
+function toast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(()=> t.classList.remove('show'), 1600);
+}
+
+async function saveTable(table){
+  table.updatedAt = Date.now();
+  try{
+    await db.ref('chiproom/'+table.code).set(table);
+    state.table = table;
+  }catch(e){ console.error(e); toast('Sync error — check your Firebase setup'); }
+}
+
+async function loadTable(code){
+  try{
+    const snap = await db.ref('chiproom/'+code).once('value');
+    return snap.exists() ? snap.val() : null;
+  }catch(e){
+    console.error(e);
+    return null;
+  }
+}
+
+// Live listener — Firebase pushes updates instantly instead of polling.
+function startPolling(){
+  stopPolling();
+  if(!state.code) return;
+  state.pollRef = db.ref('chiproom/'+state.code);
+  state.pollHandler = (snap)=>{
+    if(snap.exists()){ state.table = snap.val(); render(); }
+  };
+  state.pollRef.on('value', state.pollHandler);
+}
+function stopPolling(){
+  if(state.pollRef && state.pollHandler){
+    state.pollRef.off('value', state.pollHandler);
+  }
+  state.pollRef = null;
+  state.pollHandler = null;
+}
+
+async function createTable(seats, startPoker, startBlackjack){
+  const code = genCode();
+  const table = {
+    code,
+    seatCount: seats,
+    startingPoker: startPoker,
+    startingBlackjack: startBlackjack,
+    players: Array.from({length:seats}, ()=> ({empty:true})),
+    pokerPot: 0,
+    createdAt: Date.now()
+  };
+  await saveTable(table);
+  state.code = code;
+  render();
+}
+
+async function joinByCode(code){
+  code = code.trim().toUpperCase();
+  if(!code){ state.error='Enter a room code.'; render(); return; }
+  const t = await loadTable(code);
+  if(!t){ state.error='No table found with that code.'; render(); return; }
+  state.code = code;
+  state.table = t;
+  state.error = '';
+  state.screen = 'table';
+  // find if I already have a seat claimed under this name locally? just show seat picker
+  startPolling();
+  render();
+}
+
+async function claimSeat(idx, name){
+  if(!name.trim()){ toast('Enter a name first'); return; }
+  const t = state.table;
+  if(t.players[idx] && !t.players[idx].empty){ toast('Seat taken'); return; }
+  t.players[idx] = {
+    empty: false,
+    name: name.trim(),
+    poker: t.startingPoker,
+    blackjack: t.startingBlackjack,
+    pokerBet: 0,
+    blackjackBet: 0
+  };
+  state.mySeat = idx;
+  await saveTable(t);
+  render();
+}
+
+function leaveSeat(){
+  state.mySeat = null;
+  render();
+}
+
+async function refreshLatest(){
+  const t = await loadTable(state.code);
+  if(t){ state.table = t; }
+  return state.table;
+}
+
+async function placePokerBet(idx, amount){
+  const t = await refreshLatest();
+  const p = t.players[idx];
+  amount = Math.floor(Number(amount));
+  if(!amount || amount<=0){ toast('Enter a valid amount'); return; }
+  if(amount > p.poker){ toast('Not enough coins'); return; }
+  p.poker -= amount;
+  p.pokerBet += amount;
+  t.pokerPot += amount;
+  await saveTable(t);
+  render();
+}
+
+async function awardPot(winnerIdx){
+  const t = await refreshLatest();
+  if(t.pokerPot <= 0){ toast('Pot is empty'); return; }
+  t.players[winnerIdx].poker += t.pokerPot;
+  t.pokerPot = 0;
+  t.players.forEach(p=>{ if(p && !p.empty) p.pokerBet = 0; });
+  await saveTable(t);
+  render();
+  toast(t.players[winnerIdx].name + ' wins the pot!');
+}
+
+async function returnPokerBets(){
+  const t = await refreshLatest();
+  t.players.forEach(p=>{
+    if(p && !p.empty){ p.poker += p.pokerBet; p.pokerBet = 0; }
+  });
+  t.pokerPot = 0;
+  await saveTable(t);
+  render();
+  toast('Bets returned');
+}
+
+async function placeBjBet(idx, amount){
+  const t = await refreshLatest();
+  const p = t.players[idx];
+  amount = Math.floor(Number(amount));
+  if(!amount || amount<=0){ toast('Enter a valid amount'); return; }
+  if(p.blackjackBet > 0){ toast('Resolve current bet first'); return; }
+  if(amount > p.blackjack){ toast('Not enough coins'); return; }
+  p.blackjack -= amount;
+  p.blackjackBet = amount;
+  await saveTable(t);
+  render();
+}
+
+async function resolveBj(idx, outcome){
+  const t = await refreshLatest();
+  const p = t.players[idx];
+  if(p.blackjackBet <= 0){ toast('No active bet'); return; }
+  if(outcome === 'win') p.blackjack += p.blackjackBet * 2;
+  if(outcome === 'push') p.blackjack += p.blackjackBet;
+  if(outcome === 'blackjack') p.blackjack += Math.floor(p.blackjackBet * 2.5);
+  p.blackjackBet = 0;
+  await saveTable(t);
+  render();
+}
+
+async function resetTable(){
+  if(!confirm('Reset all balances back to the starting amounts?')) return;
+  const t = await refreshLatest();
+  t.players.forEach(p=>{
+    if(p && !p.empty){
+      p.poker = t.startingPoker;
+      p.blackjack = t.startingBlackjack;
+      p.pokerBet = 0;
+      p.blackjackBet = 0;
+    }
+  });
+  t.pokerPot = 0;
+  await saveTable(t);
+  render();
+  toast('Table reset');
+}
+
+function goHome(){
+  stopPolling();
+  state = {screen:'home', code:null, mySeat:null, myName:'', table:null, tab:'poker', poll:null, error:''};
+  render();
+}
+
+// ---------- RENDER ----------
+
+function renderSetupNeeded(){
+  return `
+    ${renderBrand()}
+    <div class="card">
+      <h2 style="margin-top:0;color:var(--gold-bright);font-size:1.1rem;">Firebase setup needed</h2>
+      <p class="muted">This standalone file needs to be connected to a free Firebase database before it can sync between phones.</p>
+      <p class="muted">Open this file in a text editor, find the <code>firebaseConfig</code> block near the top of the &lt;script&gt;, and paste in your own project's values. Then reload this page.</p>
+    </div>
+  `;
+}
+
+function render(){
+  const app = document.getElementById('app');
+  if(!firebaseReady){ app.innerHTML = renderSetupNeeded(); return; }
+  if(state.screen === 'home') app.innerHTML = renderHome();
+  else if(state.screen === 'join') app.innerHTML = renderJoin();
+  else if(state.screen === 'table') app.innerHTML = renderTable();
+  attachHandlers();
+}
+
+function renderBrand(){
+  return `<div class="brand"><div class="chip-icon"></div><h1>Chip Room</h1></div>`;
+}
+
+function renderHome(){
+  return `
+    ${renderBrand()}
+    <div class="card">
+      <h2 style="margin-top:0;font-size:1.1rem;color:var(--gold-bright)">Start a table</h2>
+      <p class="muted">Set starting coins for each game, then share the room code with up to 8 friends.</p>
+      <label>Seats (players)</label>
+      <select id="seatCount">
+        ${[2,3,4,5,6,7,8].map(n=>`<option value="${n}" ${n===8?'selected':''}>${n} players</option>`).join('')}
+      </select>
+      <label>Starting poker coins</label>
+      <input type="number" id="startPoker" value="1000" min="1" />
+      <label>Starting blackjack coins</label>
+      <input type="number" id="startBj" value="500" min="1" />
+      <button class="btn-gold btn-full" id="createBtn">Create Table</button>
+    </div>
+    <div class="card center">
+      <h2 style="margin-top:0;font-size:1.1rem;color:var(--gold-bright)">Join a table</h2>
+      <p class="muted">Got a room code from a friend?</p>
+      <button class="btn-ghost btn-full" id="goJoinBtn">Enter Room Code</button>
+    </div>
+  `;
+}
+
+function renderJoin(){
+  return `
+    ${renderBrand()}
+    <div class="card">
+      <label>Room code</label>
+      <input type="text" id="joinCode" placeholder="e.g. KQJT" maxlength="6" style="text-transform:uppercase;letter-spacing:0.2em;text-align:center;font-family:'Cinzel',serif;" />
+      ${state.error ? `<div class="err">${state.error}</div>` : ''}
+      <button class="btn-gold btn-full" id="joinBtn">Join</button>
+      <button class="btn-ghost btn-full" id="backBtn" style="margin-top:8px;">Back</button>
+    </div>
+  `;
+}
+
+function renderTable(){
+  const t = state.table;
+  if(!t) return `${renderBrand()}<p class="center muted">Loading table…</p>`;
+
+  const topbar = `
+    <div class="topbar">
+      <span class="code-mini">ROOM ${t.code}</span>
+      <button class="btn-ghost btn-small" id="leaveBtn">Leave</button>
+    </div>
+  `;
+
+  let body = '';
+  if(state.mySeat === null){
+    body = renderSeatPicker(t);
+  } else if(state.tab === 'poker'){
+    body = renderPoker(t);
+  } else if(state.tab === 'blackjack'){
+    body = renderBlackjack(t);
+  } else {
+    body = renderRankings();
+  }
+
+  const tabs = state.mySeat === null ? '' : `
+    <div class="tabbar"><div class="tabbar-inner">
+      <button class="tab-btn ${state.tab==='poker'?'active':''}" data-tab="poker">♠ Poker</button>
+      <button class="tab-btn ${state.tab==='blackjack'?'active':''}" data-tab="blackjack">♦ Blackjack</button>
+      <button class="tab-btn ${state.tab==='ranks'?'active':''}" data-tab="ranks">Rankings</button>
+    </div></div>
+  `;
+
+  return `${renderBrand()}${topbar}${body}${tabs}`;
+}
+
+function renderSeatPicker(t){
+  const seats = t.players.map((p, i) => {
+    if(p && !p.empty){
+      return `<div class="seat"><span class="seat-name">${p.name}</span><span class="muted" style="font-size:0.75rem;">taken</span></div>`;
+    }
+    return `<div class="seat empty" data-claim="${i}"><span class="seat-name">Seat ${i+1} — open</span><span class="muted" style="font-size:0.75rem;">tap to sit</span></div>`;
+  }).join('');
+
+  return `
+    <div class="card">
+      <h2 style="margin-top:0;font-size:1rem;color:var(--gold-bright)">Take a seat</h2>
+      <label>Your name</label>
+      <input type="text" id="myNameInput" placeholder="e.g. Sam" value="${state.myName}" />
+      <div class="divider"></div>
+      ${seats}
+      <p class="hint">Everyone starts with ${t.startingPoker} poker coins and ${t.startingBlackjack} blackjack coins.</p>
+    </div>
+  `;
+}
+
+function renderPoker(t){
+  const rows = t.players.map((p,i)=>{
+    if(!p || p.empty) return '';
+    const mine = i === state.mySeat;
+    return `
+      <div class="seat ${mine?'me':''}">
+        <div>
+          <div class="seat-name">${p.name}${mine?'<span class="tag">YOU</span>':''}</div>
+          ${p.pokerBet>0?`<div class="seat-bet">in for ${p.pokerBet}</div>`:''}
+        </div>
+        <div class="seat-balance">${p.poker}</div>
+      </div>
+    `;
+  }).join('');
+
+  const myControls = state.mySeat !== null ? `
+    <div class="card">
+      <label>Place a bet (your coins: ${t.players[state.mySeat].poker})</label>
+      <div class="row">
+        <input type="number" id="pokerBetAmt" placeholder="Amount" min="1" />
+        <button class="btn-gold" id="pokerBetBtn" style="flex:0 0 auto;">Bet</button>
+      </div>
+    </div>
+  ` : '';
+
+  const winnerOptions = t.players.map((p,i)=> (p && !p.empty) ? `<option value="${i}">${p.name}</option>` : '').join('');
+
+  return `
+    <div class="pot-banner">
+      <div class="lbl">Pot</div>
+      <div class="amt">${t.pokerPot}</div>
+    </div>
+    <div class="card">${rows}</div>
+    ${myControls}
+    <div class="card">
+      <label>Award pot to</label>
+      <div class="row">
+        <select id="winnerSelect">${winnerOptions}</select>
+        <button class="btn-gold" id="awardBtn" style="flex:0 0 auto;">Award</button>
+      </div>
+      <button class="btn-ghost btn-full" id="returnBetsBtn">Return all bets (no winner)</button>
+    </div>
+    <div class="card center">
+      <button class="btn-red btn-full" id="resetBtn">Reset table balances</button>
+    </div>
+  `;
+}
+
+function renderBlackjack(t){
+  const rows = t.players.map((p,i)=>{
+    if(!p || p.empty) return '';
+    const mine = i === state.mySeat;
+    return `
+      <div class="card" style="padding:14px;">
+        <div class="seat" style="background:transparent;border:none;padding:0;margin-bottom:${mine?'10px':'0'};">
+          <div class="seat-name">${p.name}${mine?'<span class="tag">YOU</span>':''}</div>
+          <div class="seat-balance">${p.blackjack}</div>
+        </div>
+        ${mine ? renderBjControls(p, i) : (p.blackjackBet>0 ? `<div class="seat-bet">bet: ${p.blackjackBet}</div>` : '')}
+      </div>
+    `;
+  }).join('');
+
+  return rows + `
+    <div class="card center">
+      <button class="btn-red btn-full" id="resetBtn">Reset table balances</button>
+    </div>
+  `;
+}
+
+function renderBjControls(p, i){
+  if(p.blackjackBet > 0){
+    return `
+      <div class="seat-bet" style="margin-bottom:8px;">Current bet: ${p.blackjackBet}</div>
+      <div class="row">
+        <button class="btn-gold btn-small" data-bj-resolve="win|${i}">Win</button>
+        <button class="btn-ghost btn-small" data-bj-resolve="push|${i}">Push</button>
+        <button class="btn-red btn-small" data-bj-resolve="lose|${i}">Lose</button>
+      </div>
+      <button class="btn-gold btn-small" style="width:100%;margin-top:6px;" data-bj-resolve="blackjack|${i}">Blackjack (3:2)</button>
+    `;
+  }
+  return `
+    <div class="row">
+      <input type="number" id="bjBetAmt${i}" placeholder="Bet amount" min="1" />
+      <button class="btn-gold" data-bj-bet="${i}" style="flex:0 0 auto;">Bet</button>
+    </div>
+  `;
+}
+
+function renderRankings(){
+  const items = HAND_RANKINGS.map((r, i)=>`
+    <div class="rank-item">
+      <div class="rank-num">${i+1}</div>
+      <div>
+        <div class="rank-name">${r[0]}</div>
+        <div class="rank-desc">${r[1]}</div>
+      </div>
+    </div>
+  `).join('');
+  return `<div class="card"><h2 style="margin-top:0;font-size:1rem;color:var(--gold-bright);">Poker Hand Rankings</h2>${items}</div>`;
+}
+
+// ---------- EVENT WIRING ----------
+
+function attachHandlers(){
+  const $ = sel => document.querySelector(sel);
+  const $$ = sel => document.querySelectorAll(sel);
+
+  if(state.screen === 'home'){
+    $('#createBtn')?.addEventListener('click', ()=>{
+      const seats = parseInt($('#seatCount').value,10);
+      const sp = parseInt($('#startPoker').value,10) || 1000;
+      const sb = parseInt($('#startBj').value,10) || 500;
+      createTable(seats, sp, sb).then(()=>{
+        state.screen = 'table';
+        startPolling();
+        render();
+      });
+    });
+    $('#goJoinBtn')?.addEventListener('click', ()=>{ state.screen='join'; render(); });
+  }
+
+  if(state.screen === 'join'){
+    $('#joinBtn')?.addEventListener('click', ()=> joinByCode($('#joinCode').value));
+    $('#joinCode')?.addEventListener('keydown', e=>{ if(e.key==='Enter') joinByCode($('#joinCode').value); });
+    $('#backBtn')?.addEventListener('click', goHome);
+  }
+
+  if(state.screen === 'table'){
+    $('#leaveBtn')?.addEventListener('click', goHome);
+    $$('.tab-btn').forEach(b=> b.addEventListener('click', ()=>{ state.tab = b.dataset.tab; render(); }));
+
+    $('#myNameInput')?.addEventListener('input', e=>{ state.myName = e.target.value; });
+    $$('.seat.empty').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const idx = parseInt(el.dataset.claim,10);
+        const name = $('#myNameInput').value;
+        claimSeat(idx, name);
+      });
+    });
+
+    $('#pokerBetBtn')?.addEventListener('click', ()=>{
+      placePokerBet(state.mySeat, $('#pokerBetAmt').value);
+    });
+    $('#awardBtn')?.addEventListener('click', ()=>{
+      awardPot(parseInt($('#winnerSelect').value,10));
+    });
+    $('#returnBetsBtn')?.addEventListener('click', returnPokerBets);
+    $('#resetBtn')?.addEventListener('click', resetTable);
+
+    $$('[data-bj-bet]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const idx = parseInt(el.dataset.bjBet,10);
+        placeBjBet(idx, $('#bjBetAmt'+idx).value);
+      });
+    });
+    $$('[data-bj-resolve]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const [outcome, idxStr] = el.dataset.bjResolve.split('|');
+        resolveBj(parseInt(idxStr,10), outcome);
+      });
+    });
+  }
+}
+
+render();
+</script>
+</body>
+</html>
