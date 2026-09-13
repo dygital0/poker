@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-<title>Chip Room</title>
+<title>Chips and Shi</title>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <style>
@@ -207,15 +207,15 @@ const HAND_RANKINGS = [
 // See the setup steps that came with this file.
 // ============================================================
 const firebaseConfig = {
-    apiKey: "AIzaSyCLdMLLgzV8BgdwudpjOApuquiVkNrA5a0",
-    authDomain: "chip-room-f2462.firebaseapp.com",
-    databaseURL: "https://chip-room-f2462-default-rtdb.asia-southeast1.firebasedatabase.app",
-    projectId: "chip-room-f2462",
-    storageBucket: "chip-room-f2462.firebasestorage.app",
-    messagingSenderId: "785904312325",
-    appId: "1:785904312325:web:2088cfa0315a811699fc6c",
-    measurementId: "G-RKP9B9F6DH"
-  };
+  apiKey: "AIzaSyCLdMLLgzV8BgdwudpjOApuquiVkNrA5a0",
+  authDomain: "chip-room-f2462.firebaseapp.com",
+  databaseURL: "https://chip-room-f2462-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "chip-room-f2462",
+  storageBucket: "chip-room-f2462.firebasestorage.app",
+  messagingSenderId: "785904312325",
+  appId: "1:785904312325:web:2088cfa0315a811699fc6c",
+  measurementId: "G-RKP9B9F6DH"
+};
 // ============================================================
 
 let db = null;
@@ -292,20 +292,41 @@ function stopPolling(){
   state.pollHandler = null;
 }
 
-async function createTable(seats, startPoker, startBlackjack){
+async function createTable(seats, startPoker, startBlackjack, hostName){
   const code = genCode();
   const table = {
     code,
     seatCount: seats,
     startingPoker: startPoker,
     startingBlackjack: startBlackjack,
+    dealerSeat: null,
     players: Array.from({length:seats}, ()=> ({empty:true})),
     pokerPot: 0,
     createdAt: Date.now()
   };
+  table.players[0] = {
+    empty: false,
+    name: hostName.trim(),
+    isHost: true,
+    poker: startPoker,
+    blackjack: startBlackjack,
+    pokerBet: 0,
+    blackjackBet: 0
+  };
   await saveTable(table);
   state.code = code;
+  state.mySeat = 0;
   render();
+}
+
+function isHost(){
+  const t = state.table;
+  return !!(t && state.mySeat !== null && t.players[state.mySeat] && t.players[state.mySeat].isHost);
+}
+
+function isDealer(){
+  const t = state.table;
+  return !!(t && state.mySeat !== null && t.dealerSeat === state.mySeat);
 }
 
 async function joinByCode(code){
@@ -317,18 +338,29 @@ async function joinByCode(code){
   state.table = t;
   state.error = '';
   state.screen = 'table';
-  // find if I already have a seat claimed under this name locally? just show seat picker
   startPolling();
   render();
 }
 
 async function claimSeat(idx, name){
-  if(!name.trim()){ toast('Enter a name first'); return; }
+  name = name.trim();
+  if(!name){ toast('Enter a name first'); return; }
   const t = state.table;
-  if(t.players[idx] && !t.players[idx].empty){ toast('Seat taken'); return; }
+  const existing = t.players[idx];
+  if(existing && !existing.empty){
+    if(existing.name.toLowerCase() === name.toLowerCase()){
+      // reclaiming your own seat after a refresh
+      state.mySeat = idx;
+      render();
+      return;
+    }
+    toast('Seat taken by someone else');
+    return;
+  }
   t.players[idx] = {
     empty: false,
-    name: name.trim(),
+    name,
+    isHost: false,
     poker: t.startingPoker,
     blackjack: t.startingBlackjack,
     pokerBet: 0,
@@ -337,6 +369,15 @@ async function claimSeat(idx, name){
   state.mySeat = idx;
   await saveTable(t);
   render();
+}
+
+async function setDealer(idx){
+  if(!isHost()){ toast('Only the host can set the dealer'); return; }
+  const t = await refreshLatest();
+  t.dealerSeat = idx;
+  await saveTable(t);
+  render();
+  toast(t.players[idx].name + ' is now the dealer');
 }
 
 function leaveSeat(){
@@ -364,6 +405,7 @@ async function placePokerBet(idx, amount){
 }
 
 async function awardPot(winnerIdx){
+  if(!isHost()){ toast('Only the host can award the pot'); return; }
   const t = await refreshLatest();
   if(t.pokerPot <= 0){ toast('Pot is empty'); return; }
   t.players[winnerIdx].poker += t.pokerPot;
@@ -375,6 +417,7 @@ async function awardPot(winnerIdx){
 }
 
 async function returnPokerBets(){
+  if(!isHost()){ toast('Only the host can do that'); return; }
   const t = await refreshLatest();
   t.players.forEach(p=>{
     if(p && !p.empty){ p.poker += p.pokerBet; p.pokerBet = 0; }
@@ -386,7 +429,9 @@ async function returnPokerBets(){
 }
 
 async function placeBjBet(idx, amount){
+  if(idx !== state.mySeat){ toast('You can only bet for yourself'); return; }
   const t = await refreshLatest();
+  if(t.dealerSeat === idx){ toast('The dealer doesn\'t place bets'); return; }
   const p = t.players[idx];
   amount = Math.floor(Number(amount));
   if(!amount || amount<=0){ toast('Enter a valid amount'); return; }
@@ -399,18 +444,19 @@ async function placeBjBet(idx, amount){
 }
 
 async function resolveBj(idx, outcome){
+  if(!isDealer()){ toast('Only the dealer can resolve hands'); return; }
   const t = await refreshLatest();
   const p = t.players[idx];
   if(p.blackjackBet <= 0){ toast('No active bet'); return; }
   if(outcome === 'win') p.blackjack += p.blackjackBet * 2;
-  if(outcome === 'push') p.blackjack += p.blackjackBet;
-  if(outcome === 'blackjack') p.blackjack += Math.floor(p.blackjackBet * 2.5);
+  // lose: bet stays gone, nothing added back
   p.blackjackBet = 0;
   await saveTable(t);
   render();
 }
 
 async function resetTable(){
+  if(!isHost()){ toast('Only the host can reset the table'); return; }
   if(!confirm('Reset all balances back to the starting amounts?')) return;
   const t = await refreshLatest();
   t.players.forEach(p=>{
@@ -456,7 +502,7 @@ function render(){
 }
 
 function renderBrand(){
-  return `<div class="brand"><div class="chip-icon"></div><h1>chips and shi</h1></div>`;
+  return `<div class="brand"><div class="chip-icon"></div><h1>Chips and Shi</h1></div>`;
 }
 
 function renderHome(){
@@ -464,7 +510,9 @@ function renderHome(){
     ${renderBrand()}
     <div class="card">
       <h2 style="margin-top:0;font-size:1.1rem;color:var(--gold-bright)">Start a table</h2>
-      <p class="muted">Set starting coins for each game, then share the room code with up to 8 friends.</p>
+      <p class="muted">You'll be seated as host and can control the pot and dealer. Share the room code with up to 8 friends.</p>
+      <label>Your name (host)</label>
+      <input type="text" id="hostName" placeholder="e.g. Sam" />
       <label>Seats (players)</label>
       <select id="seatCount">
         ${[2,3,4,5,6,7,8].map(n=>`<option value="${n}" ${n===8?'selected':''}>${n} players</option>`).join('')}
@@ -532,7 +580,8 @@ function renderTable(){
 function renderSeatPicker(t){
   const seats = t.players.map((p, i) => {
     if(p && !p.empty){
-      return `<div class="seat"><span class="seat-name">${p.name}</span><span class="muted" style="font-size:0.75rem;">taken</span></div>`;
+      const tag = p.isHost ? ' <span class="tag">HOST</span>' : (t.dealerSeat===i ? ' <span class="tag">DEALER</span>' : '');
+      return `<div class="seat" data-claim="${i}"><span class="seat-name">${p.name}${tag}</span><span class="muted" style="font-size:0.75rem;">tap if this is you</span></div>`;
     }
     return `<div class="seat empty" data-claim="${i}"><span class="seat-name">Seat ${i+1} — open</span><span class="muted" style="font-size:0.75rem;">tap to sit</span></div>`;
   }).join('');
@@ -542,6 +591,7 @@ function renderSeatPicker(t){
       <h2 style="margin-top:0;font-size:1rem;color:var(--gold-bright)">Take a seat</h2>
       <label>Your name</label>
       <input type="text" id="myNameInput" placeholder="e.g. Sam" value="${state.myName}" />
+      <p class="hint">Refreshed the page? Enter the same name and tap your old seat to get it back.</p>
       <div class="divider"></div>
       ${seats}
       <p class="hint">Everyone starts with ${t.startingPoker} poker coins and ${t.startingBlackjack} blackjack coins.</p>
@@ -576,13 +626,7 @@ function renderPoker(t){
 
   const winnerOptions = t.players.map((p,i)=> (p && !p.empty) ? `<option value="${i}">${p.name}</option>` : '').join('');
 
-  return `
-    <div class="pot-banner">
-      <div class="lbl">Pot</div>
-      <div class="amt">${t.pokerPot}</div>
-    </div>
-    <div class="card">${rows}</div>
-    ${myControls}
+  const hostControls = isHost() ? `
     <div class="card">
       <label>Award pot to</label>
       <div class="row">
@@ -591,52 +635,105 @@ function renderPoker(t){
       </div>
       <button class="btn-ghost btn-full" id="returnBetsBtn">Return all bets (no winner)</button>
     </div>
-    <div class="card center">
-      <button class="btn-red btn-full" id="resetBtn">Reset table balances</button>
+  ` : `
+    <div class="card center muted">Only the host can award the pot or reset the table.</div>
+  `;
+
+  return `
+    <div class="pot-banner">
+      <div class="lbl">Pot</div>
+      <div class="amt">${t.pokerPot}</div>
     </div>
+    <div class="card">${rows}</div>
+    ${myControls}
+    ${hostControls}
+    ${isHost() ? `<div class="card center"><button class="btn-red btn-full" id="resetBtn">Reset table balances</button></div>` : ''}
   `;
 }
 
 function renderBlackjack(t){
-  const rows = t.players.map((p,i)=>{
-    if(!p || p.empty) return '';
-    const mine = i === state.mySeat;
-    return `
-      <div class="card" style="padding:14px;">
-        <div class="seat" style="background:transparent;border:none;padding:0;margin-bottom:${mine?'10px':'0'};">
-          <div class="seat-name">${p.name}${mine?'<span class="tag">YOU</span>':''}</div>
-          <div class="seat-balance">${p.blackjack}</div>
+  const seatedPlayers = t.players.map((p,i)=> (p && !p.empty) ? {p,i} : null).filter(Boolean);
+  const dealerAssigned = t.dealerSeat !== null && t.dealerSeat !== undefined && t.players[t.dealerSeat] && !t.players[t.dealerSeat].empty;
+
+  let dealerCard = '';
+  if(!dealerAssigned){
+    if(isHost()){
+      const opts = seatedPlayers.map(({p,i})=> `<option value="${i}">${p.name}</option>`).join('');
+      dealerCard = `
+        <div class="card">
+          <h2 style="margin-top:0;font-size:1rem;color:var(--gold-bright);">Assign a dealer</h2>
+          <p class="muted">The dealer runs blackjack for everyone else and doesn't play their own hand in this tab.</p>
+          <div class="row">
+            <select id="dealerSelect">${opts}</select>
+            <button class="btn-gold" id="setDealerBtn" style="flex:0 0 auto;">Set Dealer</button>
+          </div>
         </div>
-        ${mine ? renderBjControls(p, i) : (p.blackjackBet>0 ? `<div class="seat-bet">bet: ${p.blackjackBet}</div>` : '')}
+      `;
+    } else {
+      dealerCard = `<div class="card center muted">Waiting for the host to assign a dealer.</div>`;
+    }
+  } else {
+    const dealerName = t.players[t.dealerSeat].name;
+    dealerCard = `
+      <div class="card center">
+        <span class="muted">Dealer: </span><span class="seat-name" style="color:var(--gold-bright);">${dealerName}</span>
+        ${isHost() ? `<button class="btn-ghost btn-small" id="changeDealerBtn" style="margin-left:10px;">Change</button>` : ''}
       </div>
-    `;
-  }).join('');
-
-  return rows + `
-    <div class="card center">
-      <button class="btn-red btn-full" id="resetBtn">Reset table balances</button>
-    </div>
-  `;
-}
-
-function renderBjControls(p, i){
-  if(p.blackjackBet > 0){
-    return `
-      <div class="seat-bet" style="margin-bottom:8px;">Current bet: ${p.blackjackBet}</div>
-      <div class="row">
-        <button class="btn-gold btn-small" data-bj-resolve="win|${i}">Win</button>
-        <button class="btn-ghost btn-small" data-bj-resolve="push|${i}">Push</button>
-        <button class="btn-red btn-small" data-bj-resolve="lose|${i}">Lose</button>
-      </div>
-      <button class="btn-gold btn-small" style="width:100%;margin-top:6px;" data-bj-resolve="blackjack|${i}">Blackjack (3:2)</button>
     `;
   }
-  return `
-    <div class="row">
-      <input type="number" id="bjBetAmt${i}" placeholder="Bet amount" min="1" />
-      <button class="btn-gold" data-bj-bet="${i}" style="flex:0 0 auto;">Bet</button>
-    </div>
-  `;
+
+  if(!dealerAssigned){
+    return dealerCard;
+  }
+
+  let body = '';
+  if(isDealer()){
+    // Dealer view: resolve each other player's bet
+    const rows = seatedPlayers.filter(({i})=> i !== t.dealerSeat).map(({p,i})=>`
+      <div class="card" style="padding:14px;">
+        <div class="seat" style="background:transparent;border:none;padding:0;margin-bottom:${p.blackjackBet>0?'10px':'0'};">
+          <div class="seat-name">${p.name}</div>
+          <div class="seat-balance">${p.blackjack}</div>
+        </div>
+        ${p.blackjackBet>0 ? `
+          <div class="seat-bet" style="margin-bottom:8px;">Bet on the table: ${p.blackjackBet}</div>
+          <div class="row">
+            <button class="btn-gold" data-bj-resolve="win|${i}">Win</button>
+            <button class="btn-red" data-bj-resolve="lose|${i}">Lose</button>
+          </div>
+        ` : `<p class="hint" style="text-align:left;margin:0;">Waiting for a bet</p>`}
+      </div>
+    `).join('');
+    body = `<p class="hint">You're the dealer — you don't have your own blackjack balance here.</p>${rows}`;
+  } else {
+    // Player view: place a bet, then wait for the dealer
+    const me = t.players[state.mySeat];
+    const others = seatedPlayers.filter(({i})=> i !== state.mySeat && i !== t.dealerSeat).map(({p})=>`
+      <div class="seat">
+        <span class="seat-name">${p.name}</span>
+        <span class="seat-balance">${p.blackjack}${p.blackjackBet>0?` <span class="muted" style="font-size:0.7rem;">(in for ${p.blackjackBet})</span>`:''}</span>
+      </div>
+    `).join('');
+
+    body = `
+      <div class="card">
+        <div class="seat me" style="margin-bottom:${me.blackjackBet>0?'10px':'0'};">
+          <span class="seat-name">${me.name} <span class="tag">YOU</span></span>
+          <span class="seat-balance">${me.blackjack}</span>
+        </div>
+        ${me.blackjackBet>0
+          ? `<p class="hint" style="text-align:left;margin:0;">Bet placed: ${me.blackjackBet} — waiting on the dealer.</p>`
+          : `<div class="row">
+               <input type="number" id="bjBetAmt${state.mySeat}" placeholder="Bet amount" min="1" />
+               <button class="btn-gold" data-bj-bet="${state.mySeat}" style="flex:0 0 auto;">Bet</button>
+             </div>`
+        }
+      </div>
+      ${others ? `<div class="card">${others}</div>` : ''}
+    `;
+  }
+
+  return dealerCard + body + (isHost() ? `<div class="card center"><button class="btn-red btn-full" id="resetBtn">Reset table balances</button></div>` : '');
 }
 
 function renderRankings(){
@@ -660,10 +757,12 @@ function attachHandlers(){
 
   if(state.screen === 'home'){
     $('#createBtn')?.addEventListener('click', ()=>{
+      const hostName = $('#hostName').value;
+      if(!hostName.trim()){ toast('Enter your name first'); return; }
       const seats = parseInt($('#seatCount').value,10);
       const sp = parseInt($('#startPoker').value,10) || 1000;
       const sb = parseInt($('#startBj').value,10) || 500;
-      createTable(seats, sp, sb).then(()=>{
+      createTable(seats, sp, sb, hostName).then(()=>{
         state.screen = 'table';
         startPolling();
         render();
@@ -683,7 +782,7 @@ function attachHandlers(){
     $$('.tab-btn').forEach(b=> b.addEventListener('click', ()=>{ state.tab = b.dataset.tab; render(); }));
 
     $('#myNameInput')?.addEventListener('input', e=>{ state.myName = e.target.value; });
-    $$('.seat.empty').forEach(el=>{
+    document.querySelectorAll('[data-claim]').forEach(el=>{
       el.addEventListener('click', ()=>{
         const idx = parseInt(el.dataset.claim,10);
         const name = $('#myNameInput').value;
@@ -711,6 +810,17 @@ function attachHandlers(){
         const [outcome, idxStr] = el.dataset.bjResolve.split('|');
         resolveBj(parseInt(idxStr,10), outcome);
       });
+    });
+
+    $('#setDealerBtn')?.addEventListener('click', ()=>{
+      setDealer(parseInt($('#dealerSelect').value,10));
+    });
+    $('#changeDealerBtn')?.addEventListener('click', async ()=>{
+      if(!isHost()){ toast('Only the host can do that'); return; }
+      const t = await refreshLatest();
+      t.dealerSeat = null;
+      await saveTable(t);
+      render();
     });
   }
 }
