@@ -280,7 +280,7 @@ function startPolling(){
   if(!state.code) return;
   state.pollRef = db.ref('chiproom/'+state.code);
   state.pollHandler = (snap)=>{
-    if(snap.exists()){ state.table = snap.val(); render(); }
+    if(snap.exists()){ state.table = snap.val(); render(true); }
   };
   state.pollRef.on('value', state.pollHandler);
 }
@@ -311,6 +311,7 @@ async function createTable(seats, startPoker, startBlackjack, hostName){
     poker: startPoker,
     blackjack: startBlackjack,
     pokerBet: 0,
+    lastPokerBet: 0,
     blackjackBet: 0
   };
   await saveTable(table);
@@ -364,6 +365,7 @@ async function claimSeat(idx, name){
     poker: t.startingPoker,
     blackjack: t.startingBlackjack,
     pokerBet: 0,
+    lastPokerBet: 0,
     blackjackBet: 0
   };
   state.mySeat = idx;
@@ -399,7 +401,23 @@ async function placePokerBet(idx, amount){
   if(amount > p.poker){ toast('Not enough coins'); return; }
   p.poker -= amount;
   p.pokerBet += amount;
+  p.lastPokerBet = amount;
   t.pokerPot += amount;
+  await saveTable(t);
+  render();
+}
+
+async function callPokerBet(idx){
+  const t = await refreshLatest();
+  const p = t.players[idx];
+  const highest = Math.max(0, ...t.players.filter(pl=> pl && !pl.empty).map(pl=> pl.pokerBet));
+  const needed = highest - p.pokerBet;
+  if(needed <= 0){ toast('You already match the highest bet'); return; }
+  if(needed > p.poker){ toast('Not enough coins to call — bet manually for what you have'); return; }
+  p.poker -= needed;
+  p.pokerBet += needed;
+  p.lastPokerBet = needed;
+  t.pokerPot += needed;
   await saveTable(t);
   render();
 }
@@ -410,7 +428,7 @@ async function awardPot(winnerIdx){
   if(t.pokerPot <= 0){ toast('Pot is empty'); return; }
   t.players[winnerIdx].poker += t.pokerPot;
   t.pokerPot = 0;
-  t.players.forEach(p=>{ if(p && !p.empty) p.pokerBet = 0; });
+  t.players.forEach(p=>{ if(p && !p.empty){ p.pokerBet = 0; p.lastPokerBet = 0; } });
   await saveTable(t);
   render();
   toast(t.players[winnerIdx].name + ' wins the pot!');
@@ -420,7 +438,7 @@ async function returnPokerBets(){
   if(!isHost()){ toast('Only the host can do that'); return; }
   const t = await refreshLatest();
   t.players.forEach(p=>{
-    if(p && !p.empty){ p.poker += p.pokerBet; p.pokerBet = 0; }
+    if(p && !p.empty){ p.poker += p.pokerBet; p.pokerBet = 0; p.lastPokerBet = 0; }
   });
   t.pokerPot = 0;
   await saveTable(t);
@@ -464,6 +482,7 @@ async function resetTable(){
       p.poker = t.startingPoker;
       p.blackjack = t.startingBlackjack;
       p.pokerBet = 0;
+      p.lastPokerBet = 0;
       p.blackjackBet = 0;
     }
   });
@@ -492,13 +511,36 @@ function renderSetupNeeded(){
   `;
 }
 
-function render(){
+function render(preserveFocus){
   const app = document.getElementById('app');
+
+  let savedId = null, savedValue = null, savedSelStart = null, savedSelEnd = null;
+  if(preserveFocus){
+    const active = document.activeElement;
+    if(active && app.contains(active) && active.id && (active.tagName === 'INPUT')){
+      savedId = active.id;
+      savedValue = active.value;
+      savedSelStart = active.selectionStart;
+      savedSelEnd = active.selectionEnd;
+    }
+  }
+
   if(!firebaseReady){ app.innerHTML = renderSetupNeeded(); return; }
   if(state.screen === 'home') app.innerHTML = renderHome();
   else if(state.screen === 'join') app.innerHTML = renderJoin();
   else if(state.screen === 'table') app.innerHTML = renderTable();
   attachHandlers();
+
+  if(savedId){
+    const el = document.getElementById(savedId);
+    if(el){
+      el.value = savedValue;
+      el.focus();
+      if(typeof savedSelStart === 'number'){
+        try{ el.setSelectionRange(savedSelStart, savedSelEnd); }catch(e){}
+      }
+    }
+  }
 }
 
 function renderBrand(){
@@ -607,7 +649,7 @@ function renderPoker(t){
       <div class="seat ${mine?'me':''}">
         <div>
           <div class="seat-name">${p.name}${mine?'<span class="tag">YOU</span>':''}</div>
-          ${p.pokerBet>0?`<div class="seat-bet">in for ${p.pokerBet}</div>`:''}
+          ${p.pokerBet>0?`<div class="seat-bet">in for ${p.pokerBet}${p.lastPokerBet>0?` (last bet: ${p.lastPokerBet})`:''}</div>`:''}
         </div>
         <div class="seat-balance">${p.poker}</div>
       </div>
@@ -621,6 +663,12 @@ function renderPoker(t){
         <input type="number" id="pokerBetAmt" placeholder="Amount" min="1" />
         <button class="btn-gold" id="pokerBetBtn" style="flex:0 0 auto;">Bet</button>
       </div>
+      <div class="row" style="margin-top:8px;">
+        <button class="btn-ghost btn-small" data-preset-bet="50">50</button>
+        <button class="btn-ghost btn-small" data-preset-bet="100">100</button>
+        <button class="btn-ghost btn-small" data-preset-bet="250">250</button>
+      </div>
+      <button class="btn-ghost btn-full" id="callBtn">Call / Match highest bet</button>
     </div>
   ` : '';
 
@@ -792,6 +840,14 @@ function attachHandlers(){
 
     $('#pokerBetBtn')?.addEventListener('click', ()=>{
       placePokerBet(state.mySeat, $('#pokerBetAmt').value);
+    });
+    $$('[data-preset-bet]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        placePokerBet(state.mySeat, el.dataset.presetBet);
+      });
+    });
+    $('#callBtn')?.addEventListener('click', ()=>{
+      callPokerBet(state.mySeat);
     });
     $('#awardBtn')?.addEventListener('click', ()=>{
       awardPot(parseInt($('#winnerSelect').value,10));
