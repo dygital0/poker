@@ -363,40 +363,49 @@ async function joinByCode(code){
 async function claimSeat(idx, name){
   name = name.trim();
   if(!name){ toast('Enter a name first'); return; }
-  const t = state.table;
-  const existing = t.players[idx];
-  if(existing && !existing.empty){
-    if(existing.name.toLowerCase() === name.toLowerCase()){
-      // reclaiming your own seat after a refresh
-      state.mySeat = idx;
-      render();
-      return;
-    }
-    toast('Seat taken by someone else');
+
+  const existing = state.table && state.table.players ? state.table.players[idx] : null;
+  if(existing && !existing.empty && existing.name.toLowerCase() === name.toLowerCase()){
+    // reclaiming your own seat after a refresh
+    state.mySeat = idx;
+    render();
     return;
   }
-  t.players[idx] = {
-    empty: false,
-    name,
-    isHost: false,
-    poker: t.startingPoker,
-    blackjack: t.startingBlackjack,
-    pokerBet: 0,
-    lastPokerBet: 0,
-    blackjackBet: 0
-  };
+
+  const tx = await transactTable(t=>{
+    const current = t.players[idx];
+    if(current && !current.empty){
+      if(current.name.toLowerCase() === name.toLowerCase()) return;
+      return 'Seat taken by someone else';
+    }
+    t.players[idx] = {
+      empty: false,
+      name,
+      isHost: false,
+      poker: t.startingPoker,
+      blackjack: t.startingBlackjack,
+      pokerBet: 0,
+      lastPokerBet: 0,
+      blackjackBet: 0
+    };
+  });
+
+  if(tx.error){ toast(tx.error); return; }
+  if(!tx.committed) return;
   state.mySeat = idx;
-  await saveTable(t);
   render();
 }
 
 async function setDealer(idx){
   if(!isHost()){ toast('Only the host can set the dealer'); return; }
-  const t = await refreshLatest();
-  t.dealerSeat = idx;
-  await saveTable(t);
+  const tx = await transactTable(t=>{
+    if(!t.players[idx] || t.players[idx].empty) return 'Pick a valid player';
+    t.dealerSeat = idx;
+  });
+  if(tx.error){ toast(tx.error); return; }
+  if(!tx.committed) return;
   render();
-  toast(t.players[idx].name + ' is now the dealer');
+  toast(state.table.players[idx].name + ' is now the dealer');
 }
 
 function leaveSeat(){
@@ -410,32 +419,69 @@ async function refreshLatest(){
   return state.table;
 }
 
+async function transactTable(mutator){
+  let actionError = '';
+  try{
+    const result = await db.ref('chiproom/'+state.code).transaction(t=>{
+      actionError = '';
+      if(!t){
+        actionError = 'Table no longer exists';
+        return;
+      }
+      const err = mutator(t);
+      if(typeof err === 'string' && err){
+        actionError = err;
+        return;
+      }
+      t.updatedAt = Date.now();
+      return t;
+    });
+    if(result.committed && result.snapshot.exists()){
+      state.table = result.snapshot.val();
+    }
+    return { committed: result.committed, error: actionError };
+  }catch(e){
+    console.error(e);
+    toast('Sync error — check your Firebase setup');
+    return { committed: false, error: '' };
+  }
+}
+
 async function placePokerBet(idx, amount){
-  const t = await refreshLatest();
-  const p = t.players[idx];
   amount = Math.floor(Number(amount));
   if(!amount || amount<=0){ toast('Enter a valid amount'); return; }
-  if(amount > p.poker){ toast('Not enough coins'); return; }
-  p.poker -= amount;
-  p.pokerBet += amount;
-  p.lastPokerBet = amount;
-  t.pokerPot += amount;
-  await saveTable(t);
+
+  const tx = await transactTable(t=>{
+    const p = t.players[idx];
+    if(!p || p.empty) return 'Player not found';
+    if(amount > p.poker) return 'Not enough coins';
+    p.poker -= amount;
+    p.pokerBet += amount;
+    p.lastPokerBet = amount;
+    t.pokerPot += amount;
+  });
+
+  if(tx.error){ toast(tx.error); return; }
+  if(!tx.committed) return;
   render();
 }
 
 async function callPokerBet(idx){
-  const t = await refreshLatest();
-  const p = t.players[idx];
-  const highest = Math.max(0, ...t.players.filter(pl=> pl && !pl.empty).map(pl=> pl.pokerBet));
-  const needed = highest - p.pokerBet;
-  if(needed <= 0){ toast('You already match the highest bet'); return; }
-  if(needed > p.poker){ toast('Not enough coins to call — bet manually for what you have'); return; }
-  p.poker -= needed;
-  p.pokerBet += needed;
-  p.lastPokerBet = needed;
-  t.pokerPot += needed;
-  await saveTable(t);
+  const tx = await transactTable(t=>{
+    const p = t.players[idx];
+    if(!p || p.empty) return 'Player not found';
+    const highest = Math.max(0, ...t.players.filter(pl=> pl && !pl.empty).map(pl=> pl.pokerBet));
+    const needed = highest - p.pokerBet;
+    if(needed <= 0) return 'You already match the highest bet';
+    if(needed > p.poker) return 'Not enough coins to call — bet manually for what you have';
+    p.poker -= needed;
+    p.pokerBet += needed;
+    p.lastPokerBet = needed;
+    t.pokerPot += needed;
+  });
+
+  if(tx.error){ toast(tx.error); return; }
+  if(!tx.committed) return;
   render();
 }
 
@@ -482,102 +528,134 @@ function applyPokerWinnings(t, seatIdx, amount){
 
 async function giveLoan(borrowerIdx, amount){
   if(state.mySeat === null){ toast('Take a seat first'); return; }
-  const t = await refreshLatest();
-  const lender = t.players[state.mySeat];
-  const borrower = t.players[borrowerIdx];
   amount = Math.floor(Number(amount));
-  if(!borrower || borrower.empty){ toast('Pick a valid player'); return; }
   if(borrowerIdx === state.mySeat){ toast("You can't loan to yourself"); return; }
   if(!amount || amount <= 0){ toast('Enter a valid amount'); return; }
-  if(amount > lender.poker){ toast('Not enough coins to loan that much'); return; }
 
-  lender.poker -= amount;
-  borrower.poker += amount;
-  t.loans = t.loans || [];
-  t.loans.push({
-    id: 'loan_' + Date.now() + '_' + Math.floor(Math.random()*1000),
-    lender: state.mySeat,
-    borrower: borrowerIdx,
-    principal: amount,
-    totalOwed: Math.round(amount * (1 + LOAN_INTEREST_RATE)),
-    repaid: 0,
-    active: true,
-    timestamp: Date.now()
+  const loanId = 'loan_' + Date.now() + '_' + Math.floor(Math.random()*1000);
+  const loanTimestamp = Date.now();
+
+  const tx = await transactTable(t=>{
+    const lender = t.players[state.mySeat];
+    const borrower = t.players[borrowerIdx];
+    if(!borrower || borrower.empty) return 'Pick a valid player';
+    if(!lender || lender.empty) return 'Take a seat first';
+    if(amount > lender.poker) return 'Not enough coins to loan that much';
+
+    lender.poker -= amount;
+    borrower.poker += amount;
+    t.loans = t.loans || [];
+    t.loans.push({
+      id: loanId,
+      lender: state.mySeat,
+      borrower: borrowerIdx,
+      principal: amount,
+      totalOwed: Math.round(amount * (1 + LOAN_INTEREST_RATE)),
+      repaid: 0,
+      active: true,
+      timestamp: loanTimestamp
+    });
+    snapshotBalances(t);
   });
-  snapshotBalances(t);
-  await saveTable(t);
+
+  if(tx.error){ toast(tx.error); return; }
+  if(!tx.committed) return;
   render();
-  toast(lender.name + ' loaned ' + amount + ' to ' + borrower.name);
+  toast(state.table.players[state.mySeat].name + ' loaned ' + amount + ' to ' + state.table.players[borrowerIdx].name);
 }
 
 async function awardPot(winnerIdx){
   if(!isHost()){ toast('Only the host can award the pot'); return; }
-  const t = await refreshLatest();
-  if(t.pokerPot <= 0){ toast('Pot is empty'); return; }
-  const pot = t.pokerPot;
-  const repaid = applyPokerWinnings(t, winnerIdx, pot);
-  t.pokerPot = 0;
-  t.players.forEach(p=>{ if(p && !p.empty){ p.pokerBet = 0; p.lastPokerBet = 0; } });
-  snapshotBalances(t);
-  await saveTable(t);
+  let repaid = 0;
+
+  const tx = await transactTable(t=>{
+    if(t.pokerPot <= 0) return 'Pot is empty';
+    if(!t.players[winnerIdx] || t.players[winnerIdx].empty) return 'Pick a valid winner';
+    const pot = t.pokerPot;
+    repaid = applyPokerWinnings(t, winnerIdx, pot);
+    t.pokerPot = 0;
+    t.players.forEach(p=>{ if(p && !p.empty){ p.pokerBet = 0; p.lastPokerBet = 0; } });
+    snapshotBalances(t);
+  });
+
+  if(tx.error){ toast(tx.error); return; }
+  if(!tx.committed) return;
   render();
-  toast(t.players[winnerIdx].name + ' wins the pot!' + (repaid>0 ? ' ('+repaid+' went to a loan)' : ''));
+  toast(state.table.players[winnerIdx].name + ' wins the pot!' + (repaid>0 ? ' ('+repaid+' went to a loan)' : ''));
 }
 
 async function returnPokerBets(){
   if(!isHost()){ toast('Only the host can do that'); return; }
-  const t = await refreshLatest();
-  t.players.forEach(p=>{
-    if(p && !p.empty){ p.poker += p.pokerBet; p.pokerBet = 0; p.lastPokerBet = 0; }
+
+  const tx = await transactTable(t=>{
+    t.players.forEach(p=>{
+      if(p && !p.empty){ p.poker += p.pokerBet; p.pokerBet = 0; p.lastPokerBet = 0; }
+    });
+    t.pokerPot = 0;
   });
-  t.pokerPot = 0;
-  await saveTable(t);
+
+  if(tx.error){ toast(tx.error); return; }
+  if(!tx.committed) return;
   render();
   toast('Bets returned');
 }
 
 async function placeBjBet(idx, amount){
   if(idx !== state.mySeat){ toast('You can only bet for yourself'); return; }
-  const t = await refreshLatest();
-  if(t.dealerSeat === idx){ toast('The dealer doesn\'t place bets'); return; }
-  const p = t.players[idx];
   amount = Math.floor(Number(amount));
   if(!amount || amount<=0){ toast('Enter a valid amount'); return; }
-  if(p.blackjackBet > 0){ toast('Resolve current bet first'); return; }
-  if(amount > p.blackjack){ toast('Not enough coins'); return; }
-  p.blackjack -= amount;
-  p.blackjackBet = amount;
-  await saveTable(t);
+
+  const tx = await transactTable(t=>{
+    if(t.dealerSeat === idx) return 'The dealer doesn\'t place bets';
+    const p = t.players[idx];
+    if(!p || p.empty) return 'Player not found';
+    if(p.blackjackBet > 0) return 'Resolve current bet first';
+    if(amount > p.blackjack) return 'Not enough coins';
+    p.blackjack -= amount;
+    p.blackjackBet = amount;
+  });
+
+  if(tx.error){ toast(tx.error); return; }
+  if(!tx.committed) return;
   render();
 }
 
 async function resolveBj(idx, outcome){
   if(!isDealer()){ toast('Only the dealer can resolve hands'); return; }
-  const t = await refreshLatest();
-  const p = t.players[idx];
-  if(p.blackjackBet <= 0){ toast('No active bet'); return; }
-  if(outcome === 'win') p.blackjack += p.blackjackBet * 2;
-  // lose: bet stays gone, nothing added back
-  p.blackjackBet = 0;
-  await saveTable(t);
+
+  const tx = await transactTable(t=>{
+    const p = t.players[idx];
+    if(!p || p.empty) return 'Player not found';
+    if(p.blackjackBet <= 0) return 'No active bet';
+    if(outcome === 'win') p.blackjack += p.blackjackBet * 2;
+    // lose: bet stays gone, nothing added back
+    p.blackjackBet = 0;
+  });
+
+  if(tx.error){ toast(tx.error); return; }
+  if(!tx.committed) return;
   render();
 }
 
 async function resetPokerBalances(){
   if(!isHost()){ toast('Only the host can reset poker balances'); return; }
   if(!confirm('Reset everyone\'s poker coins back to the starting amount? This also clears all loan debt.')) return;
-  const t = await refreshLatest();
-  t.players.forEach(p=>{
-    if(p && !p.empty){
-      p.poker = t.startingPoker;
-      p.pokerBet = 0;
-      p.lastPokerBet = 0;
-    }
+
+  const tx = await transactTable(t=>{
+    t.players.forEach(p=>{
+      if(p && !p.empty){
+        p.poker = t.startingPoker;
+        p.pokerBet = 0;
+        p.lastPokerBet = 0;
+      }
+    });
+    t.pokerPot = 0;
+    (t.loans || []).forEach(l => { l.active = false; });
+    snapshotBalances(t);
   });
-  t.pokerPot = 0;
-  (t.loans || []).forEach(l => { l.active = false; });
-  snapshotBalances(t);
-  await saveTable(t);
+
+  if(tx.error){ toast(tx.error); return; }
+  if(!tx.committed) return;
   render();
   toast('Poker balances reset');
 }
@@ -585,14 +663,18 @@ async function resetPokerBalances(){
 async function resetBlackjackBalances(){
   if(!isHost()){ toast('Only the host can reset blackjack balances'); return; }
   if(!confirm('Reset everyone\'s blackjack coins back to the starting amount?')) return;
-  const t = await refreshLatest();
-  t.players.forEach(p=>{
-    if(p && !p.empty){
-      p.blackjack = t.startingBlackjack;
-      p.blackjackBet = 0;
-    }
+
+  const tx = await transactTable(t=>{
+    t.players.forEach(p=>{
+      if(p && !p.empty){
+        p.blackjack = t.startingBlackjack;
+        p.blackjackBet = 0;
+      }
+    });
   });
-  await saveTable(t);
+
+  if(tx.error){ toast(tx.error); return; }
+  if(!tx.committed) return;
   render();
   toast('Blackjack balances reset');
 }
@@ -600,25 +682,67 @@ async function resetBlackjackBalances(){
 async function kickPlayer(idx){
   if(!isHost()){ toast('Only the host can kick players'); return; }
   if(idx === state.mySeat){ toast("You can't kick yourself"); return; }
-  const t = await refreshLatest();
-  const p = t.players[idx];
-  if(!p || p.empty) return;
-  if(!confirm('Kick ' + p.name + ' from the table?')) return;
+  const current = state.table && state.table.players ? state.table.players[idx] : null;
+  if(!current || current.empty) return;
+  if(!confirm('Kick ' + current.name + ' from the table?')) return;
 
-  t.players[idx] = {empty: true};
-  if(t.dealerSeat === idx) t.dealerSeat = null;
-  (t.loans || []).forEach(l=>{
-    if(l.lender === idx || l.borrower === idx) l.active = false;
+  let removedName = current.name;
+  const tx = await transactTable(t=>{
+    const p = t.players[idx];
+    if(!p || p.empty) return 'Player is no longer seated';
+    removedName = p.name;
+    t.players[idx] = {empty: true};
+    if(t.dealerSeat === idx) t.dealerSeat = null;
+    (t.loans || []).forEach(l=>{
+      if(l.lender === idx || l.borrower === idx) l.active = false;
+    });
   });
-  await saveTable(t);
+
+  if(tx.error){ toast(tx.error); return; }
+  if(!tx.committed) return;
   render();
-  toast(p.name + ' was removed');
+  toast(removedName + ' was removed');
 }
 
 function goHome(){
   stopPolling();
   state = {screen:'home', code:null, mySeat:null, myName:'', table:null, tab:'poker', poll:null, error:''};
   render();
+}
+
+async function cleanupOldRooms(){
+  const cutoff = Date.now() - (24 * 60 * 60 * 1000);
+  try{
+    const snap = await db.ref('chiproom').once('value');
+    if(!snap.exists()){ toast('No old rooms to clean'); return; }
+
+    const rooms = snap.val();
+    const oldCodes = Object.keys(rooms).filter(code=>{
+      const room = rooms[code];
+      const lastActivity = room && (room.updatedAt || room.createdAt || 0);
+      return lastActivity < cutoff;
+    });
+
+    if(!oldCodes.length){ toast('No old rooms to clean'); return; }
+
+    if(!confirm('Delete ' + oldCodes.length + ' room' + (oldCodes.length===1?'':'s') + ' inactive for more than 24 hours?')) return;
+
+    let deleted = 0;
+    for(const code of oldCodes){
+      const result = await db.ref('chiproom/'+code).transaction(room=>{
+        if(!room) return;
+        const lastActivity = room.updatedAt || room.createdAt || 0;
+        if(lastActivity >= cutoff) return;
+        return null;
+      });
+      if(result.committed && !result.snapshot.exists()) deleted++;
+    }
+
+    toast(deleted ? (deleted + ' old room' + (deleted===1?'':'s') + ' deleted') : 'No old rooms to clean');
+  }catch(e){
+    console.error(e);
+    toast('Room cleanup failed');
+  }
 }
 
 // ---------- RENDER ----------
@@ -683,15 +807,19 @@ function renderHome(){
         ${[2,3,4,5,6,7,8].map(n=>`<option value="${n}" ${n===8?'selected':''}>${n} players</option>`).join('')}
       </select>
       <label>Starting poker coins</label>
-      <input type="number" id="startPoker" value="1000" min="1" />
+      <input type="number" id="startPoker" value="10000" min="1" />
       <label>Starting blackjack coins</label>
-      <input type="number" id="startBj" value="500" min="1" />
+      <input type="number" id="startBj" value="5000" min="1" />
       <button class="btn-gold btn-full" id="createBtn">Create Table</button>
     </div>
     <div class="card center">
       <h2 style="margin-top:0;font-size:1.1rem;color:var(--gold-bright)">Join a table</h2>
       <p class="muted">Got a room code from a friend?</p>
       <button class="btn-ghost btn-full" id="goJoinBtn">Enter Room Code</button>
+    </div>
+    <div class="center" style="margin-top:40px;padding-bottom:20px;">
+      <button class="btn-ghost btn-small" id="cleanupRoomsBtn" style="opacity:0.65;">Clean Old Rooms</button>
+      <p class="hint">Deletes rooms inactive for more than 24 hours.</p>
     </div>
   `;
 }
@@ -738,7 +866,7 @@ function renderTable(){
   const tabs = state.mySeat === null ? '' : `
     <div class="tabbar"><div class="tabbar-inner">
       <button class="tab-btn ${state.tab==='poker'?'active':''}" data-tab="poker">♠ Poker</button>
-      <button class="tab-btn ${state.tab==='blackjack'?'active':''}" data-tab="blackjack">♦ Blackjack</button>
+      <button class="tab-btn ${state.tab==='blackjack'?'active':''}" data-tab="blackjack">♦ BJ/button>
       <button class="tab-btn ${state.tab==='loans'?'active':''}" data-tab="loans">Loans</button>
       <button class="tab-btn ${state.tab==='ranks'?'active':''}" data-tab="ranks">Ranks</button>
       ${isHost() ? `<button class="tab-btn ${state.tab==='host'?'active':''}" data-tab="host">Host</button>` : ''}
@@ -1073,6 +1201,7 @@ function attachHandlers(){
       });
     });
     $('#goJoinBtn')?.addEventListener('click', ()=>{ state.screen='join'; render(); });
+    $('#cleanupRoomsBtn')?.addEventListener('click', cleanupOldRooms);
   }
 
   if(state.screen === 'join'){
@@ -1144,9 +1273,11 @@ function attachHandlers(){
     });
     $('#changeDealerBtn')?.addEventListener('click', async ()=>{
       if(!isHost()){ toast('Only the host can do that'); return; }
-      const t = await refreshLatest();
-      t.dealerSeat = null;
-      await saveTable(t);
+      const tx = await transactTable(t=>{
+        t.dealerSeat = null;
+      });
+      if(tx.error){ toast(tx.error); return; }
+      if(!tx.committed) return;
       render();
     });
   }
