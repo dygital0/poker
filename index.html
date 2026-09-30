@@ -866,7 +866,7 @@ function renderTable(){
   const tabs = state.mySeat === null ? '' : `
     <div class="tabbar"><div class="tabbar-inner">
       <button class="tab-btn ${state.tab==='poker'?'active':''}" data-tab="poker">♠ Poker</button>
-      <button class="tab-btn ${state.tab==='blackjack'?'active':''}" data-tab="blackjack">♦ BJ/button>
+      <button class="tab-btn ${state.tab==='blackjack'?'active':''}" data-tab="blackjack">♦ BJ</button>
       <button class="tab-btn ${state.tab==='loans'?'active':''}" data-tab="loans">Loans</button>
       <button class="tab-btn ${state.tab==='ranks'?'active':''}" data-tab="ranks">Ranks</button>
       ${isHost() ? `<button class="tab-btn ${state.tab==='host'?'active':''}" data-tab="host">Host</button>` : ''}
