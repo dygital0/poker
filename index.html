@@ -201,6 +201,10 @@ const HAND_RANKINGS = [
   ["High Card","No combination — highest card plays."]
 ];
 
+// Loans are poker-coins only. Adjust these two numbers to change house rules.
+const LOAN_INTEREST_RATE = 0.2;     // 20% — borrow 100, owe 120 back
+const LOAN_REPAYMENT_SHARE = 0.5;   // 50% of each pot you win goes to open loans until paid off
+
 // ============================================================
 // FIREBASE SETUP — paste your own project's config here.
 // Get this from: Firebase Console > Project Settings > Your apps > (</>) web app
@@ -280,7 +284,17 @@ function startPolling(){
   if(!state.code) return;
   state.pollRef = db.ref('chiproom/'+state.code);
   state.pollHandler = (snap)=>{
-    if(snap.exists()){ state.table = snap.val(); render(true); }
+    if(snap.exists()){
+      state.table = snap.val();
+      if(state.mySeat !== null){
+        const mine = state.table.players[state.mySeat];
+        if(!mine || mine.empty){
+          state.mySeat = null;
+          toast("You were removed from your seat");
+        }
+      }
+      render(true);
+    }
   };
   state.pollRef.on('value', state.pollHandler);
 }
@@ -300,6 +314,8 @@ async function createTable(seats, startPoker, startBlackjack, hostName){
     startingPoker: startPoker,
     startingBlackjack: startBlackjack,
     dealerSeat: null,
+    loans: [],
+    balanceHistory: [],
     players: Array.from({length:seats}, ()=> ({empty:true})),
     pokerPot: 0,
     createdAt: Date.now()
@@ -314,6 +330,7 @@ async function createTable(seats, startPoker, startBlackjack, hostName){
     lastPokerBet: 0,
     blackjackBet: 0
   };
+  snapshotBalances(table);
   await saveTable(table);
   state.code = code;
   state.mySeat = 0;
@@ -422,16 +439,89 @@ async function callPokerBet(idx){
   render();
 }
 
+// Records a point-in-time snapshot of every seated player's poker balance,
+// used to draw the balance-over-time graph in the Loans tab.
+function snapshotBalances(t){
+  t.balanceHistory = t.balanceHistory || [];
+  t.balanceHistory.push({
+    timestamp: Date.now(),
+    balances: t.players.map(p => (p && !p.empty) ? p.poker : null)
+  });
+  if(t.balanceHistory.length > 200) t.balanceHistory = t.balanceHistory.slice(-200);
+}
+
+// Credits winnings to a player, automatically skimming a share toward any
+// open loans they owe (oldest loan first) before the rest lands in their balance.
+function applyPokerWinnings(t, seatIdx, amount){
+  let toPlayer = amount;
+  let repaidTotal = 0;
+  const openLoans = (t.loans || [])
+    .filter(l => l.active && l.borrower === seatIdx)
+    .sort((a,b) => a.timestamp - b.timestamp);
+
+  if(openLoans.length){
+    let repayPool = Math.floor(amount * LOAN_REPAYMENT_SHARE);
+    for(const loan of openLoans){
+      if(repayPool <= 0 || toPlayer <= 0) break;
+      const owed = loan.totalOwed - loan.repaid;
+      const pay = Math.min(repayPool, owed, toPlayer);
+      if(pay <= 0) continue;
+      loan.repaid += pay;
+      repayPool -= pay;
+      toPlayer -= pay;
+      repaidTotal += pay;
+      const lender = t.players[loan.lender];
+      if(lender && !lender.empty) lender.poker += pay;
+      if(loan.repaid >= loan.totalOwed) loan.active = false;
+    }
+  }
+
+  t.players[seatIdx].poker += toPlayer;
+  return repaidTotal;
+}
+
+async function giveLoan(borrowerIdx, amount){
+  if(state.mySeat === null){ toast('Take a seat first'); return; }
+  const t = await refreshLatest();
+  const lender = t.players[state.mySeat];
+  const borrower = t.players[borrowerIdx];
+  amount = Math.floor(Number(amount));
+  if(!borrower || borrower.empty){ toast('Pick a valid player'); return; }
+  if(borrowerIdx === state.mySeat){ toast("You can't loan to yourself"); return; }
+  if(!amount || amount <= 0){ toast('Enter a valid amount'); return; }
+  if(amount > lender.poker){ toast('Not enough coins to loan that much'); return; }
+
+  lender.poker -= amount;
+  borrower.poker += amount;
+  t.loans = t.loans || [];
+  t.loans.push({
+    id: 'loan_' + Date.now() + '_' + Math.floor(Math.random()*1000),
+    lender: state.mySeat,
+    borrower: borrowerIdx,
+    principal: amount,
+    totalOwed: Math.round(amount * (1 + LOAN_INTEREST_RATE)),
+    repaid: 0,
+    active: true,
+    timestamp: Date.now()
+  });
+  snapshotBalances(t);
+  await saveTable(t);
+  render();
+  toast(lender.name + ' loaned ' + amount + ' to ' + borrower.name);
+}
+
 async function awardPot(winnerIdx){
   if(!isHost()){ toast('Only the host can award the pot'); return; }
   const t = await refreshLatest();
   if(t.pokerPot <= 0){ toast('Pot is empty'); return; }
-  t.players[winnerIdx].poker += t.pokerPot;
+  const pot = t.pokerPot;
+  const repaid = applyPokerWinnings(t, winnerIdx, pot);
   t.pokerPot = 0;
   t.players.forEach(p=>{ if(p && !p.empty){ p.pokerBet = 0; p.lastPokerBet = 0; } });
+  snapshotBalances(t);
   await saveTable(t);
   render();
-  toast(t.players[winnerIdx].name + ' wins the pot!');
+  toast(t.players[winnerIdx].name + ' wins the pot!' + (repaid>0 ? ' ('+repaid+' went to a loan)' : ''));
 }
 
 async function returnPokerBets(){
@@ -473,23 +563,56 @@ async function resolveBj(idx, outcome){
   render();
 }
 
-async function resetTable(){
-  if(!isHost()){ toast('Only the host can reset the table'); return; }
-  if(!confirm('Reset all balances back to the starting amounts?')) return;
+async function resetPokerBalances(){
+  if(!isHost()){ toast('Only the host can reset poker balances'); return; }
+  if(!confirm('Reset everyone\'s poker coins back to the starting amount? This also clears all loan debt.')) return;
   const t = await refreshLatest();
   t.players.forEach(p=>{
     if(p && !p.empty){
       p.poker = t.startingPoker;
-      p.blackjack = t.startingBlackjack;
       p.pokerBet = 0;
       p.lastPokerBet = 0;
-      p.blackjackBet = 0;
     }
   });
   t.pokerPot = 0;
+  (t.loans || []).forEach(l => { l.active = false; });
+  snapshotBalances(t);
   await saveTable(t);
   render();
-  toast('Table reset');
+  toast('Poker balances reset');
+}
+
+async function resetBlackjackBalances(){
+  if(!isHost()){ toast('Only the host can reset blackjack balances'); return; }
+  if(!confirm('Reset everyone\'s blackjack coins back to the starting amount?')) return;
+  const t = await refreshLatest();
+  t.players.forEach(p=>{
+    if(p && !p.empty){
+      p.blackjack = t.startingBlackjack;
+      p.blackjackBet = 0;
+    }
+  });
+  await saveTable(t);
+  render();
+  toast('Blackjack balances reset');
+}
+
+async function kickPlayer(idx){
+  if(!isHost()){ toast('Only the host can kick players'); return; }
+  if(idx === state.mySeat){ toast("You can't kick yourself"); return; }
+  const t = await refreshLatest();
+  const p = t.players[idx];
+  if(!p || p.empty) return;
+  if(!confirm('Kick ' + p.name + ' from the table?')) return;
+
+  t.players[idx] = {empty: true};
+  if(t.dealerSeat === idx) t.dealerSeat = null;
+  (t.loans || []).forEach(l=>{
+    if(l.lender === idx || l.borrower === idx) l.active = false;
+  });
+  await saveTable(t);
+  render();
+  toast(p.name + ' was removed');
 }
 
 function goHome(){
@@ -604,6 +727,10 @@ function renderTable(){
     body = renderPoker(t);
   } else if(state.tab === 'blackjack'){
     body = renderBlackjack(t);
+  } else if(state.tab === 'loans'){
+    body = renderLoans(t);
+  } else if(state.tab === 'host'){
+    body = renderHost(t);
   } else {
     body = renderRankings();
   }
@@ -612,7 +739,9 @@ function renderTable(){
     <div class="tabbar"><div class="tabbar-inner">
       <button class="tab-btn ${state.tab==='poker'?'active':''}" data-tab="poker">♠ Poker</button>
       <button class="tab-btn ${state.tab==='blackjack'?'active':''}" data-tab="blackjack">♦ Blackjack</button>
-      <button class="tab-btn ${state.tab==='ranks'?'active':''}" data-tab="ranks">Rankings</button>
+      <button class="tab-btn ${state.tab==='loans'?'active':''}" data-tab="loans">Loans</button>
+      <button class="tab-btn ${state.tab==='ranks'?'active':''}" data-tab="ranks">Ranks</button>
+      ${isHost() ? `<button class="tab-btn ${state.tab==='host'?'active':''}" data-tab="host">Host</button>` : ''}
     </div></div>
   `;
 
@@ -684,7 +813,7 @@ function renderPoker(t){
       <button class="btn-ghost btn-full" id="returnBetsBtn">Return all bets (no winner)</button>
     </div>
   ` : `
-    <div class="card center muted">Only the host can award the pot or reset the table.</div>
+    <div class="card center muted">Only the host can award the pot.</div>
   `;
 
   return `
@@ -695,7 +824,6 @@ function renderPoker(t){
     <div class="card">${rows}</div>
     ${myControls}
     ${hostControls}
-    ${isHost() ? `<div class="card center"><button class="btn-red btn-full" id="resetBtn">Reset table balances</button></div>` : ''}
   `;
 }
 
@@ -781,7 +909,7 @@ function renderBlackjack(t){
     `;
   }
 
-  return dealerCard + body + (isHost() ? `<div class="card center"><button class="btn-red btn-full" id="resetBtn">Reset table balances</button></div>` : '');
+  return dealerCard + body;
 }
 
 function renderRankings(){
@@ -795,6 +923,134 @@ function renderRankings(){
     </div>
   `).join('');
   return `<div class="card"><h2 style="margin-top:0;font-size:1rem;color:var(--gold-bright);">Poker Hand Rankings</h2>${items}</div>`;
+}
+
+// Small hand-rolled SVG line chart — no external chart library needed.
+function renderBalanceChart(t){
+  const history = t.balanceHistory || [];
+  const seated = t.players.map((p,i)=> (p && !p.empty) ? i : null).filter(i=>i!==null);
+  if(history.length < 2 || seated.length === 0){
+    return `<div class="card center muted">The balance graph fills in once a few hands are played.</div>`;
+  }
+
+  const W = 300, H = 150, PAD = 10;
+  let minB = t.startingPoker, maxB = t.startingPoker;
+  seated.forEach(i=>{
+    history.forEach(h=>{
+      const v = h.balances[i];
+      if(typeof v === 'number'){ if(v<minB) minB=v; if(v>maxB) maxB=v; }
+    });
+  });
+  if(minB === maxB){ minB -= 10; maxB += 10; }
+
+  const xStep = (W - PAD*2) / Math.max(1, history.length - 1);
+  const yFor = v => H - PAD - ((v - minB) / (maxB - minB)) * (H - PAD*2);
+  const palette = ['#f0d68a','#b83247','#6fb3b8','#7d9bd1','#e0935a','#a487c9','#e08fb0','#8fc98a'];
+  const baselineY = yFor(t.startingPoker);
+
+  const lines = seated.map((seatIdx, colorIdx) => {
+    let pts = [];
+    history.forEach((h, hi) => {
+      const v = h.balances[seatIdx];
+      if(typeof v === 'number') pts.push([PAD + hi*xStep, yFor(v)]);
+    });
+    if(pts.length < 2) return '';
+    const d = pts.map((p,i)=> (i===0?'M':'L') + p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+    return `<path d="${d}" fill="none" stroke="${palette[colorIdx % palette.length]}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
+  }).join('');
+
+  const legend = seated.map((seatIdx, colorIdx) => `
+    <span style="display:inline-flex;align-items:center;gap:5px;margin-right:12px;margin-bottom:6px;font-size:0.72rem;color:var(--cream-dim);">
+      <span style="width:9px;height:9px;border-radius:50%;background:${palette[colorIdx % palette.length]};display:inline-block;"></span>
+      ${t.players[seatIdx].name}
+    </span>
+  `).join('');
+
+  return `
+    <div class="card">
+      <h2 style="margin-top:0;font-size:1rem;color:var(--gold-bright);">Poker balance over time</h2>
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;">
+        <line x1="${PAD}" y1="${baselineY.toFixed(1)}" x2="${W-PAD}" y2="${baselineY.toFixed(1)}" stroke="rgba(243,233,210,0.25)" stroke-width="1" stroke-dasharray="4,3"/>
+        ${lines}
+      </svg>
+      <div style="margin-top:8px;">${legend}</div>
+      <p class="hint">Dashed line = starting stack (${t.startingPoker})</p>
+    </div>
+  `;
+}
+
+function renderLoans(t){
+  const seatedPlayers = t.players.map((p,i)=> (p && !p.empty) ? {p,i} : null).filter(Boolean);
+  const others = seatedPlayers.filter(({i})=> i !== state.mySeat);
+  const me = state.mySeat !== null ? t.players[state.mySeat] : null;
+
+  const chart = renderBalanceChart(t);
+
+  const giveCard = me ? `
+    <div class="card">
+      <h2 style="margin-top:0;font-size:1rem;color:var(--gold-bright);">Give a loan</h2>
+      <p class="muted">Loans come out of your own poker coins, carry ${Math.round(LOAN_INTEREST_RATE*100)}% interest, and ${Math.round(LOAN_REPAYMENT_SHARE*100)}% of every pot they win gets skimmed back to you until it's paid off.</p>
+      ${others.length ? `
+        <label>Loan to</label>
+        <select id="loanTarget">${others.map(({p,i})=>`<option value="${i}">${p.name}</option>`).join('')}</select>
+        <label>Amount (your coins: ${me.poker})</label>
+        <div class="row">
+          <input type="number" id="loanAmt" placeholder="Amount" min="1" />
+          <button class="btn-gold" id="giveLoanBtn" style="flex:0 0 auto;">Loan</button>
+        </div>
+      ` : `<p class="muted">No one else is seated yet.</p>`}
+    </div>
+  ` : '';
+
+  const loans = (t.loans || []).slice().sort((a,b)=> b.timestamp - a.timestamp);
+  const loanRows = loans.length ? loans.map(l=>{
+    const lenderName = t.players[l.lender] ? t.players[l.lender].name : '(left)';
+    const borrowerName = t.players[l.borrower] ? t.players[l.borrower].name : '(left)';
+    const status = !l.active ? (l.repaid >= l.totalOwed ? 'Paid off' : 'Closed') : `Owes ${l.totalOwed - l.repaid}`;
+    return `
+      <div class="seat">
+        <div>
+          <div class="seat-name">${lenderName} → ${borrowerName}</div>
+          <div class="seat-bet">borrowed ${l.principal}, owed ${l.totalOwed}, repaid ${l.repaid}</div>
+        </div>
+        <div class="seat-balance" style="font-size:0.85rem;">${status}</div>
+      </div>
+    `;
+  }).join('') : `<p class="muted center">No loans yet.</p>`;
+
+  return `
+    ${chart}
+    ${giveCard}
+    <div class="card">
+      <h2 style="margin-top:0;font-size:1rem;color:var(--gold-bright);">Loan log</h2>
+      ${loanRows}
+    </div>
+  `;
+}
+
+function renderHost(t){
+  if(!isHost()) return `<div class="card center muted">Host tools only.</div>`;
+  const seatedOthers = t.players.map((p,i)=> (p && !p.empty && i!==state.mySeat) ? {p,i} : null).filter(Boolean);
+
+  const kickRows = seatedOthers.length ? seatedOthers.map(({p,i})=>`
+    <div class="seat">
+      <span class="seat-name">${p.name}</span>
+      <button class="btn-red btn-small" data-kick="${i}">Kick</button>
+    </div>
+  `).join('') : `<p class="muted center">No one else seated yet.</p>`;
+
+  return `
+    <div class="card">
+      <h2 style="margin-top:0;font-size:1rem;color:var(--gold-bright);">Kick a player</h2>
+      ${kickRows}
+    </div>
+    <div class="card">
+      <h2 style="margin-top:0;font-size:1rem;color:var(--gold-bright);">Reset balances</h2>
+      <p class="muted">Poker and blackjack reset separately.</p>
+      <button class="btn-red btn-full" id="resetPokerBtn">Reset poker balances</button>
+      <button class="btn-red btn-full" id="resetBjBtn" style="margin-top:10px;">Reset blackjack balances</button>
+    </div>
+  `;
 }
 
 // ---------- EVENT WIRING ----------
@@ -843,7 +1099,10 @@ function attachHandlers(){
     });
     $$('[data-preset-bet]').forEach(el=>{
       el.addEventListener('click', ()=>{
-        placePokerBet(state.mySeat, el.dataset.presetBet);
+        const input = $('#pokerBetAmt');
+        const current = parseInt(input.value, 10) || 0;
+        input.value = current + parseInt(el.dataset.presetBet, 10);
+        input.focus();
       });
     });
     $('#callBtn')?.addEventListener('click', ()=>{
@@ -853,7 +1112,19 @@ function attachHandlers(){
       awardPot(parseInt($('#winnerSelect').value,10));
     });
     $('#returnBetsBtn')?.addEventListener('click', returnPokerBets);
-    $('#resetBtn')?.addEventListener('click', resetTable);
+    $('#resetPokerBtn')?.addEventListener('click', resetPokerBalances);
+    $('#resetBjBtn')?.addEventListener('click', resetBlackjackBalances);
+
+    $('#giveLoanBtn')?.addEventListener('click', ()=>{
+      const target = $('#loanTarget');
+      if(!target) return;
+      giveLoan(parseInt(target.value,10), $('#loanAmt').value);
+    });
+    $$('[data-kick]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        kickPlayer(parseInt(el.dataset.kick,10));
+      });
+    });
 
     $$('[data-bj-bet]').forEach(el=>{
       el.addEventListener('click', ()=>{
